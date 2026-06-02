@@ -1,60 +1,37 @@
 #!/usr/bin/env python3
-"""OCR Server — Flask API for Tesseract OCR.
+"""OCR Server — EasyOCR with Flask API.
 Deploy: railway run python3 ocr_server.py
 """
 import sys, json, urllib.request, io, time, logging, re, os
 from flask import Flask, request, jsonify
-import pytesseract
-from PIL import Image, ImageFilter
+import easyocr
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [OCR] %(levelname)s %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("ocr")
 
 app = Flask(__name__)
 
-def clean_text(text: str) -> str:
-    """Merge spaced-out letters like 'b u n n y' → 'bunny' and clean up."""
-    import re
-    # Merge spaced single letters: "b u n n y" → "bunny", "c h o c o l a t e" → "chocolate"
-    # Pattern: single letter surrounded by spaces, 2+ consecutive
-    cleaned = re.sub(r'(?:^| )(?<!-)([a-zA-Z]) (?:[a-zA-Z] )(?:[a-zA-Z])', lambda m: m.group(0).replace(' ', ''), text)
-    # Also merge any remaining spaced letters
-    cleaned = re.sub(r'\b([a-zA-Z]) ([a-zA-Z])\b', r'\1\2', cleaned)
-    # Remove lines with mostly special characters
-    lines = cleaned.split("\n")
-    good_lines = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        # Count alphanumeric vs special chars
-        alnum = sum(1 for c in line if c.isalnum() or c.isspace())
-        special = sum(1 for c in line if not c.isalnum() and not c.isspace())
-        if special > alnum * 0.3 and len(line) > 5:
-            continue  # skip lines with too many special chars
-        good_lines.append(line)
-    return "\n".join(good_lines)
+_reader = None
+def get_reader():
+    global _reader
+    if _reader is None:
+        log.info("Loading EasyOCR reader (first run may take a while)...")
+        t0 = time.time()
+        _reader = easyocr.Reader(["en"], gpu=False)
+        log.info(f"Reader ready in {time.time()-t0:.1f}s")
+    return _reader
 
 def has_real_text(text: str) -> bool:
-    text = clean_text(text)
-    if not text or len(text) < 10:
+    if not text or len(text.strip()) < 10:
         return False
     letters = sum(1 for c in text if c.isalpha())
     if letters / max(len(text), 1) < 0.5:
         return False
-    # Check for repetitive garbage like "aaaa" or "121212"
-    alnum_chars = re.sub(r'[^a-zA-Z0-9]', '', text)
-    unique_chars = len(set(alnum_chars.lower()))
-    if unique_chars <= 3 and len(alnum_chars) > 10:
-        return False
-    # Must have at least 1 word with 4+ letters, or 3 words with 3+ letters
     words = re.findall(r"[a-zA-Z]{4,}", text)
     if len(words) >= 1:
         return True
     words3 = re.findall(r"[a-zA-Z]{3,}", text)
-    if len(words3) >= 3:
-        return True
-    return False
+    return len(words3) >= 3
 
 def ocr_image(image_url: str) -> str:
     log.info(f"Downloading: {image_url[:80]}...")
@@ -64,34 +41,20 @@ def ocr_image(image_url: str) -> str:
         img_data = resp.read()
         log.info(f"Downloaded {len(img_data)/1024:.0f}KB in {time.time()-t0:.1f}s")
 
+    reader = get_reader()
     t1 = time.time()
-    img = Image.open(io.BytesIO(img_data))
-    img = img.convert("L")
-    img = img.filter(ImageFilter.SHARPEN)
+    results = reader.readtext(img_data, detail=0, paragraph=True)
+    text = "\n".join(results).strip()
+    log.info(f"OCR done in {time.time()-t1:.1f}s — {len(text)} chars, {len(results)} blocks")
+    return text
 
-    data = pytesseract.image_to_data(img, lang="eng", config="--psm 6 --oem 3", output_type=pytesseract.Output.DICT)
-
-    prev_line = -1
-    line_texts = []
-    for i, text in enumerate(data["text"]):
-        text = text.strip()
-        conf = int(data["conf"][i]) if data["conf"][i] != "-1" else 0
-        line_num = data["line_num"][i]
-        if conf >= 20 and len(text) > 1:
-            if line_num != prev_line and line_texts:
-                line_texts.append(" ".join(line_texts.pop()))
-            line_texts.append(text)
-            prev_line = line_num
-
-    if not line_texts:
-        return ""
-
-    result = "\n".join(line_texts).strip()
-    if not has_real_text(result):
-        return ""
-
-    log.info(f"OCR done in {time.time()-t1:.1f}s — {len(result)} chars")
-    return clean_text(result)
+def ocr_image_from_bytes(img_data: bytes) -> str:
+    reader = get_reader()
+    t1 = time.time()
+    results = reader.readtext(img_data, detail=0, paragraph=True)
+    text = "\n".join(results).strip()
+    log.info(f"OCR done in {time.time()-t1:.1f}s — {len(text)} chars, {len(results)} blocks")
+    return text
 
 @app.route("/ocr", methods=["POST"])
 def ocr_endpoint():
@@ -99,44 +62,16 @@ def ocr_endpoint():
     if not data or ("imageUrl" not in data and "imageBase64" not in data):
         return jsonify({"error": "imageUrl or imageBase64 required"}), 400
     try:
-        # If base64 data is provided, use it directly (avoids download issues)
+        import base64
         if data.get("imageBase64"):
-            import base64
             img_data = base64.b64decode(data["imageBase64"])
             text = ocr_image_from_bytes(img_data)
         else:
             text = ocr_image(data["imageUrl"])
-        return jsonify({"text": text, "method": "tesseract"})
+        return jsonify({"text": text if has_real_text(text) else "", "method": "easyocr"})
     except Exception as e:
         log.error(f"Failed: {e}")
         return jsonify({"error": str(e)}), 500
-
-def ocr_image_from_bytes(img_data: bytes) -> str:
-    """Run OCR on already-downloaded image bytes."""
-    import io
-    t1 = time.time()
-    img = Image.open(io.BytesIO(img_data))
-    img = img.convert("L")
-    img = img.filter(ImageFilter.SHARPEN)
-
-    ocr_data = pytesseract.image_to_data(img, lang="eng", config="--psm 6 --oem 3", output_type=pytesseract.Output.DICT)
-    prev_line = -1
-    line_texts = []
-    for i, text in enumerate(ocr_data["text"]):
-        text = text.strip()
-        conf = int(ocr_data["conf"][i]) if ocr_data["conf"][i] != "-1" else 0
-        line_num = ocr_data["line_num"][i]
-        if conf >= 30 and len(text) > 1:
-            if line_num != prev_line and line_texts:
-                line_texts.append(" ".join(line_texts.pop()))
-            line_texts.append(text)
-            prev_line = line_num
-
-    result = "\n".join(line_texts).strip() if line_texts else ""
-    if result and not has_real_text(result):
-        result = ""
-    log.info(f"OCR done in {time.time()-t1:.1f}s — {len(result)} chars")
-    return result
 
 @app.route("/health")
 def health():

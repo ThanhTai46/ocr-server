@@ -1,4 +1,4 @@
-pytesseract
-Pillow
+easyocr
+torch
 flask
 gunicorn
