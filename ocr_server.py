@@ -12,22 +12,47 @@ log = logging.getLogger("ocr")
 
 app = Flask(__name__)
 
+def clean_text(text: str) -> str:
+    """Merge spaced-out letters like 'b u n n y' → 'bunny' and clean up."""
+    import re
+    # Merge spaced single letters: "b u n n y" → "bunny", "c h o c o l a t e" → "chocolate"
+    # Pattern: single letter surrounded by spaces, 2+ consecutive
+    cleaned = re.sub(r'(?:^| )(?<!-)([a-zA-Z]) (?:[a-zA-Z] )(?:[a-zA-Z])', lambda m: m.group(0).replace(' ', ''), text)
+    # Also merge any remaining spaced letters
+    cleaned = re.sub(r'\b([a-zA-Z]) ([a-zA-Z])\b', r'\1\2', cleaned)
+    # Remove lines with mostly special characters
+    lines = cleaned.split("\n")
+    good_lines = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # Count alphanumeric vs special chars
+        alnum = sum(1 for c in line if c.isalnum() or c.isspace())
+        special = sum(1 for c in line if not c.isalnum() and not c.isspace())
+        if special > alnum * 0.3 and len(line) > 5:
+            continue  # skip lines with too many special chars
+        good_lines.append(line)
+    return "\n".join(good_lines)
+
 def has_real_text(text: str) -> bool:
+    text = clean_text(text)
     if not text or len(text) < 10:
         return False
     letters = sum(1 for c in text if c.isalpha())
     if letters / max(len(text), 1) < 0.5:
         return False
     # Check for repetitive garbage like "aaaa" or "121212"
-    unique_chars = len(set(text.lower().replace(" ", "")))
-    if unique_chars <= 3 and len(text) > 15:
+    alnum_chars = re.sub(r'[^a-zA-Z0-9]', '', text)
+    unique_chars = len(set(alnum_chars.lower()))
+    if unique_chars <= 3 and len(alnum_chars) > 10:
         return False
     # Must have at least 1 word with 4+ letters, or 3 words with 3+ letters
-    words = re.findall(r"[a-zA-Z]{3,}", text)
-    long_words = [w for w in words if len(w) >= 4]
-    if len(long_words) >= 1:
+    words = re.findall(r"[a-zA-Z]{4,}", text)
+    if len(words) >= 1:
         return True
-    if len(words) >= 3:
+    words3 = re.findall(r"[a-zA-Z]{3,}", text)
+    if len(words3) >= 3:
         return True
     return False
 
@@ -66,7 +91,7 @@ def ocr_image(image_url: str) -> str:
         return ""
 
     log.info(f"OCR done in {time.time()-t1:.1f}s — {len(result)} chars")
-    return result
+    return clean_text(result)
 
 @app.route("/ocr", methods=["POST"])
 def ocr_endpoint():
