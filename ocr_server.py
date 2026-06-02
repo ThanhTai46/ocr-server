@@ -61,14 +61,47 @@ def ocr_image(image_url: str) -> str:
 @app.route("/ocr", methods=["POST"])
 def ocr_endpoint():
     data = request.get_json()
-    if not data or "imageUrl" not in data:
-        return jsonify({"error": "imageUrl required"}), 400
+    if not data or ("imageUrl" not in data and "imageBase64" not in data):
+        return jsonify({"error": "imageUrl or imageBase64 required"}), 400
     try:
-        text = ocr_image(data["imageUrl"])
+        # If base64 data is provided, use it directly (avoids download issues)
+        if data.get("imageBase64"):
+            import base64
+            img_data = base64.b64decode(data["imageBase64"])
+            text = ocr_image_from_bytes(img_data)
+        else:
+            text = ocr_image(data["imageUrl"])
         return jsonify({"text": text, "method": "tesseract"})
     except Exception as e:
         log.error(f"Failed: {e}")
         return jsonify({"error": str(e)}), 500
+
+def ocr_image_from_bytes(img_data: bytes) -> str:
+    """Run OCR on already-downloaded image bytes."""
+    import io
+    t1 = time.time()
+    img = Image.open(io.BytesIO(img_data))
+    img = img.convert("L")
+    img = img.filter(ImageFilter.SHARPEN)
+
+    ocr_data = pytesseract.image_to_data(img, lang="eng", config="--psm 6 --oem 3", output_type=pytesseract.Output.DICT)
+    prev_line = -1
+    line_texts = []
+    for i, text in enumerate(ocr_data["text"]):
+        text = text.strip()
+        conf = int(ocr_data["conf"][i]) if ocr_data["conf"][i] != "-1" else 0
+        line_num = ocr_data["line_num"][i]
+        if conf >= 30 and len(text) > 1:
+            if line_num != prev_line and line_texts:
+                line_texts.append(" ".join(line_texts.pop()))
+            line_texts.append(text)
+            prev_line = line_num
+
+    result = "\n".join(line_texts).strip() if line_texts else ""
+    if result and not has_real_text(result):
+        result = ""
+    log.info(f"OCR done in {time.time()-t1:.1f}s — {len(result)} chars")
+    return result
 
 @app.route("/health")
 def health():
