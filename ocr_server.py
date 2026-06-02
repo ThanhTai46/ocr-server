@@ -16,10 +16,20 @@ def has_real_text(text: str) -> bool:
     if not text or len(text) < 10:
         return False
     letters = sum(1 for c in text if c.isalpha())
-    if letters / max(len(text), 1) < 0.6:
+    if letters / max(len(text), 1) < 0.5:
         return False
+    # Check for repetitive garbage like "aaaa" or "121212"
+    unique_chars = len(set(text.lower().replace(" ", "")))
+    if unique_chars <= 3 and len(text) > 15:
+        return False
+    # Must have at least 1 word with 4+ letters, or 3 words with 3+ letters
     words = re.findall(r"[a-zA-Z]{3,}", text)
-    return len(words) >= 2
+    long_words = [w for w in words if len(w) >= 4]
+    if len(long_words) >= 1:
+        return True
+    if len(words) >= 3:
+        return True
+    return False
 
 def ocr_image(image_url: str) -> str:
     log.info(f"Downloading: {image_url[:80]}...")
@@ -42,7 +52,7 @@ def ocr_image(image_url: str) -> str:
         text = text.strip()
         conf = int(data["conf"][i]) if data["conf"][i] != "-1" else 0
         line_num = data["line_num"][i]
-        if conf >= 30 and len(text) > 1:
+        if conf >= 20 and len(text) > 1:
             if line_num != prev_line and line_texts:
                 line_texts.append(" ".join(line_texts.pop()))
             line_texts.append(text)
