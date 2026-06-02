@@ -2,7 +2,7 @@
 """OCR Server — Flask API for Tesseract OCR.
 Deploy: railway run python3 ocr_server.py
 """
-import sys, json, urllib.request, io, time, logging, re
+import sys, json, urllib.request, io, time, logging, re, os
 from flask import Flask, request, jsonify
 import pytesseract
 from PIL import Image, ImageFilter
