@@ -6,4 +6,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY ocr_server.py .
 
 EXPOSE 8080
-CMD ["python3", "ocr_server.py"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "120", "--workers", "1", "ocr_server:app"]

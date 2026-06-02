@@ -4,6 +4,8 @@ Deploy: railway run python3 ocr_server.py
 """
 import sys, json, urllib.request, io, time, logging, re, os
 from flask import Flask, request, jsonify
+
+# Import EasyOCR with warmup
 import easyocr
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [OCR] %(levelname)s %(message)s", datefmt="%H:%M:%S")
@@ -20,6 +22,13 @@ def get_reader():
         _reader = easyocr.Reader(["en"], gpu=False)
         log.info(f"Reader ready in {time.time()-t0:.1f}s")
     return _reader
+
+# Warmup: preload model on startup
+log.info("Warming up EasyOCR model...")
+t0 = time.time()
+warmup_reader = easyocr.Reader(["en"], gpu=False)
+_reader = warmup_reader
+log.info(f"EasyOCR warmed up in {time.time()-t0:.1f}s")
 
 def has_real_text(text: str) -> bool:
     if not text or len(text.strip()) < 10:
