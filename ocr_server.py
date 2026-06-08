@@ -118,7 +118,8 @@ def ocr_endpoint():
             text = ocr_image_from_bytes(img_data)
         else:
             text = ocr_image(data["imageUrl"])
-        return jsonify({"text": text if has_real_text(text) else "", "method": "tesseract"})
+        cleaned = clean_text(text)
+        return jsonify({"text": cleaned if has_real_text(text) else "", "method": "tesseract"})
     except Exception as e:
         log.error(f"Failed: {e}")
         return jsonify({"error": str(e)}), 500
