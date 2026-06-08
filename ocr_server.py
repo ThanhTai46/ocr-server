@@ -21,10 +21,8 @@ COMMON_WORDS = {"a", "an", "in", "on", "at", "to", "is", "it", "of", "by", "be",
                  "may", "man", "say", "let", "him"}
 
 def clean_text(text: str) -> str:
-    cleaned = re.sub(r'(?<![a-zA-Z])([a-zA-Z]) (?:([a-zA-Z]) )+([a-zA-Z])(?![a-zA-Z])',
-                     lambda m: m.group(0).replace(" ", ""), text)
     cleaned = re.sub(r'(?<![a-zA-Z])([a-zA-Z]) ([a-zA-Z])(?![a-zA-Z])',
-                     r'\1\2', cleaned)
+                     r'\1\2', text)
 
     lines = cleaned.split("\n")
     good = []
@@ -83,24 +81,8 @@ def ocr_image_from_bytes(img_data: bytes) -> str:
     img = img.convert("L")
     img = img.filter(ImageFilter.SHARPEN)
 
-    data = pytesseract.image_to_data(img, lang="eng", config="--psm 6 --oem 3", output_type=pytesseract.Output.DICT)
-
-    lines = {}
-    order = []
-    for i, text in enumerate(data["text"]):
-        if not text.strip():
-            continue
-        conf = int(data["conf"][i]) if data["conf"][i] != "-1" else 0
-        if conf < 20:
-            continue
-        line_num = data["line_num"][i]
-        if line_num not in lines:
-            lines[line_num] = []
-            order.append(line_num)
-        lines[line_num].append(text)
-
-    result = "\n".join(" ".join(lines[ln]) for ln in order).strip()
-    log.info(f"OCR done in {time.time()-t1:.1f}s — {len(result)} chars, {len(order)} lines")
+    result = pytesseract.image_to_string(img, lang="eng", config="--psm 6 --oem 3").strip()
+    log.info(f"OCR done in {time.time()-t1:.1f}s — {len(result)} chars, {result.count(chr(10))+1} lines")
     return result
 
 @app.route("/ocr", methods=["POST"])
