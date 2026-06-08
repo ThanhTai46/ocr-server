@@ -7,6 +7,10 @@ from flask import Flask, request, jsonify
 
 # Import EasyOCR with warmup
 import easyocr
+import torch
+
+torch.set_grad_enabled(False)
+torch.set_num_threads(1)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [OCR] %(levelname)s %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("ocr")
@@ -26,8 +30,7 @@ def get_reader():
 # Warmup: preload model on startup
 log.info("Warming up EasyOCR model...")
 t0 = time.time()
-warmup_reader = easyocr.Reader(["en"], gpu=False)
-_reader = warmup_reader
+_reader = easyocr.Reader(["en"], gpu=False)
 log.info(f"EasyOCR warmed up in {time.time()-t0:.1f}s")
 
 def has_real_text(text: str) -> bool:
