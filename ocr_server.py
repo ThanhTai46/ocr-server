@@ -1,40 +1,63 @@
 #!/usr/bin/env python3
-"""OCR Server — EasyOCR with Flask API.
+"""OCR Server — Tesseract OCR with Flask API.
 Deploy: railway run python3 ocr_server.py
 """
-import sys, json, urllib.request, io, time, logging, re, os
+import sys, json, urllib.request, io, time, logging, re, os, base64
 from flask import Flask, request, jsonify
-
-# Import EasyOCR with warmup
-import easyocr
-import torch
-
-torch.set_grad_enabled(False)
-torch.set_num_threads(1)
+from PIL import Image, ImageFilter
+import pytesseract
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [OCR] %(levelname)s %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("ocr")
 
 app = Flask(__name__)
 
-_reader = None
-def get_reader():
-    global _reader
-    if _reader is None:
-        log.info("Loading EasyOCR reader (first run may take a while)...")
-        t0 = time.time()
-        _reader = easyocr.Reader(["en"], gpu=False)
-        log.info(f"Reader ready in {time.time()-t0:.1f}s")
-    return _reader
+COMMON_WORDS = {"a", "an", "in", "on", "at", "to", "is", "it", "of", "by", "be",
+                 "he", "she", "we", "they", "me", "my", "no", "so", "go", "up",
+                 "us", "or", "as", "do", "if", "am", "ex", "oh", "ok", "tv",
+                 "was", "had", "has", "but", "can", "for", "the", "and", "are",
+                 "not", "his", "her", "its", "all", "how", "why", "who", "did",
+                 "get", "got", "out", "say", "see", "too", "two", "way", "now",
+                 "may", "man", "say", "let", "him"}
 
-# Warmup: preload model on startup
-log.info("Warming up EasyOCR model...")
-t0 = time.time()
-_reader = easyocr.Reader(["en"], gpu=False)
-log.info(f"EasyOCR warmed up in {time.time()-t0:.1f}s")
+def clean_text(text: str) -> str:
+    cleaned = re.sub(r'(?<![a-zA-Z])([a-zA-Z]) (?:([a-zA-Z]) )+([a-zA-Z])(?![a-zA-Z])',
+                     lambda m: m.group(0).replace(" ", ""), text)
+    cleaned = re.sub(r'(?<![a-zA-Z])([a-zA-Z]) ([a-zA-Z])(?![a-zA-Z])',
+                     r'\1\2', cleaned)
+
+    lines = cleaned.split("\n")
+    good = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        letters = sum(1 for c in line if c.isalpha())
+        special = sum(1 for c in line if not c.isalnum() and not c.isspace())
+        total = len(line)
+
+        if special > max(letters, 1) * 0.6 and total > 2:
+            continue
+
+        word_letters = len(re.sub(r'[^a-zA-Z]', '', line))
+        if word_letters >= 4:
+            good.append(line)
+            continue
+
+        word = re.sub(r'[^a-zA-Z]', '', line).lower()
+        if word in COMMON_WORDS:
+            good.append(line)
+            continue
+
+        if letters >= 3 and word_letters == len(line.rstrip(".,!?;:\"'")):
+            good.append(line)
+            continue
+
+    return "\n".join(good)
 
 def has_real_text(text: str) -> bool:
-    if not text or len(text.strip()) < 10:
+    text = clean_text(text)
+    if not text or len(text) < 10:
         return False
     letters = sum(1 for c in text if c.isalpha())
     if letters / max(len(text), 1) < 0.5:
@@ -52,21 +75,37 @@ def ocr_image(image_url: str) -> str:
     with urllib.request.urlopen(req, timeout=30) as resp:
         img_data = resp.read()
         log.info(f"Downloaded {len(img_data)/1024:.0f}KB in {time.time()-t0:.1f}s")
-
-    reader = get_reader()
-    t1 = time.time()
-    results = reader.readtext(img_data, detail=0, paragraph=True)
-    text = "\n".join(results).strip()
-    log.info(f"OCR done in {time.time()-t1:.1f}s — {len(text)} chars, {len(results)} blocks")
-    return text
+    return ocr_image_from_bytes(img_data)
 
 def ocr_image_from_bytes(img_data: bytes) -> str:
-    reader = get_reader()
     t1 = time.time()
-    results = reader.readtext(img_data, detail=0, paragraph=True)
-    text = "\n".join(results).strip()
-    log.info(f"OCR done in {time.time()-t1:.1f}s — {len(text)} chars, {len(results)} blocks")
-    return text
+    img = Image.open(io.BytesIO(img_data))
+    img = img.convert("L")
+    img = img.filter(ImageFilter.SHARPEN)
+
+    data = pytesseract.image_to_data(img, lang="eng", config="--psm 6 --oem 3", output_type=pytesseract.Output.DICT)
+
+    prev_line = -1
+    line_texts = []
+    for i, text in enumerate(data["text"]):
+        if not text.strip():
+            continue
+        conf = int(data["conf"][i]) if data["conf"][i] != "-1" else 0
+        if conf < 20:
+            continue
+        line_num = data["line_num"][i]
+        if line_num != prev_line:
+            if line_texts:
+                line_texts.append(" ".join(line_texts.pop()))
+            line_texts.append(text)
+            prev_line = line_num
+
+    if line_texts:
+        line_texts.append(" ".join(line_texts.pop()))
+
+    result = "\n".join(line_texts).strip()
+    log.info(f"OCR done in {time.time()-t1:.1f}s — {len(result)} chars, {len(line_texts)} lines")
+    return result
 
 @app.route("/ocr", methods=["POST"])
 def ocr_endpoint():
@@ -74,13 +113,12 @@ def ocr_endpoint():
     if not data or ("imageUrl" not in data and "imageBase64" not in data):
         return jsonify({"error": "imageUrl or imageBase64 required"}), 400
     try:
-        import base64
         if data.get("imageBase64"):
             img_data = base64.b64decode(data["imageBase64"])
             text = ocr_image_from_bytes(img_data)
         else:
             text = ocr_image(data["imageUrl"])
-        return jsonify({"text": text if has_real_text(text) else "", "method": "easyocr"})
+        return jsonify({"text": text if has_real_text(text) else "", "method": "tesseract"})
     except Exception as e:
         log.error(f"Failed: {e}")
         return jsonify({"error": str(e)}), 500
