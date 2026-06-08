@@ -85,8 +85,8 @@ def ocr_image_from_bytes(img_data: bytes) -> str:
 
     data = pytesseract.image_to_data(img, lang="eng", config="--psm 6 --oem 3", output_type=pytesseract.Output.DICT)
 
-    prev_line = -1
-    line_texts = []
+    lines = {}
+    order = []
     for i, text in enumerate(data["text"]):
         if not text.strip():
             continue
@@ -94,17 +94,13 @@ def ocr_image_from_bytes(img_data: bytes) -> str:
         if conf < 20:
             continue
         line_num = data["line_num"][i]
-        if line_num != prev_line:
-            if line_texts:
-                line_texts.append(" ".join(line_texts.pop()))
-            line_texts.append(text)
-            prev_line = line_num
+        if line_num not in lines:
+            lines[line_num] = []
+            order.append(line_num)
+        lines[line_num].append(text)
 
-    if line_texts:
-        line_texts.append(" ".join(line_texts.pop()))
-
-    result = "\n".join(line_texts).strip()
-    log.info(f"OCR done in {time.time()-t1:.1f}s — {len(result)} chars, {len(line_texts)} lines")
+    result = "\n".join(" ".join(lines[ln]) for ln in order).strip()
+    log.info(f"OCR done in {time.time()-t1:.1f}s — {len(result)} chars, {len(order)} lines")
     return result
 
 @app.route("/ocr", methods=["POST"])
